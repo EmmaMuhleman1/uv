@@ -407,8 +407,21 @@ impl<'de> Deserialize<'de> for StringVersion {
     where
         D: Deserializer<'de>,
     {
-        let string = String::deserialize(deserializer)?;
-        Self::from_str(&string).map_err(de::Error::custom)
+        struct Visitor;
+
+        impl de::Visitor<'_> for Visitor {
+            type Value = StringVersion;
+
+            fn expecting(&self, f: &mut Formatter) -> fmt::Result {
+                f.write_str("a string")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                StringVersion::from_str(v).map_err(de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_str(Visitor)
     }
 }
 
@@ -651,8 +664,21 @@ impl<'de> Deserialize<'de> for MarkerTree {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        FromStr::from_str(&s).map_err(de::Error::custom)
+        struct Visitor;
+
+        impl de::Visitor<'_> for Visitor {
+            type Value = MarkerTree;
+
+            fn expecting(&self, f: &mut Formatter) -> fmt::Result {
+                f.write_str("a string")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                MarkerTree::from_str(v).map_err(de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_str(Visitor)
     }
 }
 
@@ -1160,6 +1186,49 @@ impl MarkerTree {
     #[must_use]
     pub fn only_extras(self) -> MarkerTree {
         MarkerTree(INTERNER.lock().only_extras(self.0))
+    }
+
+    /// Calls the provided function on every `extra` in this tree.
+    ///
+    /// The operator provided to the function is guaranteed to be
+    /// `MarkerOperator::Equal` or `MarkerOperator::NotEqual`.
+    pub fn visit_extras(self, mut f: impl FnMut(MarkerOperator, &ExtraName)) {
+        fn imp(tree: MarkerTree, f: &mut impl FnMut(MarkerOperator, &ExtraName)) {
+            match tree.kind() {
+                MarkerTreeKind::True | MarkerTreeKind::False => {}
+                MarkerTreeKind::Version(kind) => {
+                    for (tree, _) in simplify::collect_edges(kind.edges()) {
+                        imp(tree, f);
+                    }
+                }
+                MarkerTreeKind::String(kind) => {
+                    for (tree, _) in simplify::collect_edges(kind.children()) {
+                        imp(tree, f);
+                    }
+                }
+                MarkerTreeKind::In(kind) => {
+                    for (_, tree) in kind.children() {
+                        imp(tree, f);
+                    }
+                }
+                MarkerTreeKind::Contains(kind) => {
+                    for (_, tree) in kind.children() {
+                        imp(tree, f);
+                    }
+                }
+                MarkerTreeKind::Extra(kind) => {
+                    if kind.low.is_false() {
+                        f(MarkerOperator::Equal, kind.name().extra());
+                    } else {
+                        f(MarkerOperator::NotEqual, kind.name().extra());
+                    }
+                    for (_, tree) in kind.children() {
+                        imp(tree, f);
+                    }
+                }
+            }
+        }
+        imp(self, &mut f);
     }
 
     fn simplify_extras_with_impl(self, is_extra: &impl Fn(&ExtraName) -> bool) -> MarkerTree {
@@ -3209,6 +3278,52 @@ mod test {
                 or (os_name == 'nt' and sys_platform == 'win32')")
             .only_extras(),
             m("os_name == 'Linux' or os_name != 'Linux'"),
+        );
+    }
+
+    #[test]
+    fn visit_extras() {
+        let collect = |m: MarkerTree| -> Vec<(&'static str, String)> {
+            let mut collected = vec![];
+            m.visit_extras(|op, extra| {
+                let op = match op {
+                    MarkerOperator::Equal => "==",
+                    MarkerOperator::NotEqual => "!=",
+                    _ => unreachable!(),
+                };
+                collected.push((op, extra.as_str().to_string()));
+            });
+            collected
+        };
+        assert_eq!(collect(m("os_name == 'Linux'")), vec![]);
+        assert_eq!(
+            collect(m("extra == 'foo'")),
+            vec![("==", "foo".to_string())]
+        );
+        assert_eq!(
+            collect(m("extra == 'Linux' and extra == 'foo'")),
+            vec![("==", "foo".to_string()), ("==", "linux".to_string())]
+        );
+        assert_eq!(
+            collect(m("os_name == 'Linux' and extra == 'foo'")),
+            vec![("==", "foo".to_string())]
+        );
+
+        let marker = "
+            python_full_version >= '3.12'
+            and sys_platform == 'darwin'
+            and extra == 'extra-27-resolution-markers-for-days-cpu'
+            and extra != 'extra-27-resolution-markers-for-days-cu124'
+        ";
+        assert_eq!(
+            collect(m(marker)),
+            vec![
+                ("==", "extra-27-resolution-markers-for-days-cpu".to_string()),
+                (
+                    "!=",
+                    "extra-27-resolution-markers-for-days-cu124".to_string()
+                ),
+            ]
         );
     }
 }

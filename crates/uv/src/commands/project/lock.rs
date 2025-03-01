@@ -10,10 +10,10 @@ use rustc_hash::{FxBuildHasher, FxHashMap};
 use tracing::debug;
 
 use uv_cache::Cache;
-use uv_client::{Connectivity, FlatIndexClient, RegistryClientBuilder};
+use uv_client::{BaseClientBuilder, FlatIndexClient, RegistryClientBuilder};
 use uv_configuration::{
     Concurrency, Constraints, DevGroupsSpecification, DryRun, ExtrasSpecification, PreviewMode,
-    Reinstall, TrustedHost, Upgrade,
+    Reinstall, Upgrade,
 };
 use uv_dispatch::BuildDispatch;
 use uv_distribution::DistributionDatabase;
@@ -41,12 +41,13 @@ use uv_workspace::{DiscoveryOptions, Workspace, WorkspaceMember};
 use crate::commands::pip::loggers::{DefaultResolveLogger, ResolveLogger, SummaryResolveLogger};
 use crate::commands::project::lock_target::LockTarget;
 use crate::commands::project::{
-    ProjectError, ProjectInterpreter, ScriptInterpreter, UniversalState,
+    init_script_python_requirement, ProjectError, ProjectInterpreter, ScriptInterpreter,
+    UniversalState,
 };
-use crate::commands::reporters::ResolverReporter;
-use crate::commands::{diagnostics, pip, ExitStatus};
+use crate::commands::reporters::{PythonDownloadReporter, ResolverReporter};
+use crate::commands::{diagnostics, pip, ExitStatus, ScriptPath};
 use crate::printer::Printer;
-use crate::settings::{ResolverSettings, ResolverSettingsRef};
+use crate::settings::{NetworkSettings, ResolverSettings, ResolverSettingsRef};
 
 /// The result of running a lock operation.
 #[derive(Debug, Clone)]
@@ -83,18 +84,43 @@ pub(crate) async fn lock(
     python: Option<String>,
     install_mirrors: PythonInstallMirrors,
     settings: ResolverSettings,
-    script: Option<Pep723Script>,
+    network_settings: NetworkSettings,
+    script: Option<ScriptPath>,
     python_preference: PythonPreference,
     python_downloads: PythonDownloads,
-    connectivity: Connectivity,
     concurrency: Concurrency,
-    native_tls: bool,
-    allow_insecure_host: &[TrustedHost],
     no_config: bool,
     cache: &Cache,
     printer: Printer,
     preview: PreviewMode,
 ) -> anyhow::Result<ExitStatus> {
+    // If necessary, initialize the PEP 723 script.
+    let script = match script {
+        Some(ScriptPath::Path(path)) => {
+            let client_builder = BaseClientBuilder::new()
+                .connectivity(network_settings.connectivity)
+                .native_tls(network_settings.native_tls)
+                .allow_insecure_host(network_settings.allow_insecure_host.clone());
+            let reporter = PythonDownloadReporter::single(printer);
+            let requires_python = init_script_python_requirement(
+                python.as_deref(),
+                &install_mirrors,
+                project_dir,
+                false,
+                python_preference,
+                python_downloads,
+                no_config,
+                &client_builder,
+                cache,
+                &reporter,
+            )
+            .await?;
+            Some(Pep723Script::init(&path, requires_python.specifiers()).await?)
+        }
+        Some(ScriptPath::Script(script)) => Some(script),
+        None => None,
+    };
+
     // Find the project requirements.
     let workspace;
     let target = if let Some(script) = script.as_ref() {
@@ -114,11 +140,9 @@ pub(crate) async fn lock(
                 workspace,
                 project_dir,
                 python.as_deref().map(PythonRequest::parse),
+                &network_settings,
                 python_preference,
                 python_downloads,
-                connectivity,
-                native_tls,
-                allow_insecure_host,
                 &install_mirrors,
                 no_config,
                 Some(false),
@@ -130,11 +154,9 @@ pub(crate) async fn lock(
             LockTarget::Script(script) => ScriptInterpreter::discover(
                 Pep723ItemRef::Script(script),
                 python.as_deref().map(PythonRequest::parse),
+                &network_settings,
                 python_preference,
                 python_downloads,
-                connectivity,
-                native_tls,
-                allow_insecure_host,
                 &install_mirrors,
                 no_config,
                 Some(false),
@@ -162,12 +184,10 @@ pub(crate) async fn lock(
         mode,
         target,
         settings.as_ref(),
+        &network_settings,
         &state,
         Box::new(DefaultResolveLogger),
-        connectivity,
         concurrency,
-        native_tls,
-        allow_insecure_host,
         cache,
         printer,
         preview,
@@ -202,7 +222,7 @@ pub(crate) async fn lock(
             Ok(ExitStatus::Success)
         }
         Err(ProjectError::Operation(err)) => {
-            diagnostics::OperationDiagnostic::native_tls(native_tls)
+            diagnostics::OperationDiagnostic::native_tls(network_settings.native_tls)
                 .report(err)
                 .map_or(Ok(ExitStatus::Failure), |err| Err(err.into()))
         }
@@ -228,12 +248,10 @@ pub(super) async fn do_safe_lock(
     mode: LockMode<'_>,
     target: LockTarget<'_>,
     settings: ResolverSettingsRef<'_>,
+    network_settings: &NetworkSettings,
     state: &UniversalState,
     logger: Box<dyn ResolveLogger>,
-    connectivity: Connectivity,
     concurrency: Concurrency,
-    native_tls: bool,
-    allow_insecure_host: &[TrustedHost],
     cache: &Cache,
     printer: Printer,
     preview: PreviewMode,
@@ -260,12 +278,10 @@ pub(super) async fn do_safe_lock(
                 interpreter,
                 Some(existing),
                 settings,
+                network_settings,
                 state,
                 logger,
-                connectivity,
                 concurrency,
-                native_tls,
-                allow_insecure_host,
                 cache,
                 printer,
                 preview,
@@ -299,12 +315,10 @@ pub(super) async fn do_safe_lock(
                 interpreter,
                 existing,
                 settings,
+                network_settings,
                 state,
                 logger,
-                connectivity,
                 concurrency,
-                native_tls,
-                allow_insecure_host,
                 cache,
                 printer,
                 preview,
@@ -329,12 +343,10 @@ async fn do_lock(
     interpreter: &Interpreter,
     existing_lock: Option<Lock>,
     settings: ResolverSettingsRef<'_>,
+    network_settings: &NetworkSettings,
     state: &UniversalState,
     logger: Box<dyn ResolveLogger>,
-    connectivity: Connectivity,
     concurrency: Concurrency,
-    native_tls: bool,
-    allow_insecure_host: &[TrustedHost],
     cache: &Cache,
     printer: Printer,
     preview: PreviewMode,
@@ -366,6 +378,7 @@ async fn do_lock(
     let requirements = target.requirements();
     let overrides = target.overrides();
     let constraints = target.constraints();
+    let build_constraints = target.build_constraints();
     let dependency_groups = target.dependency_groups()?;
     let source_trees = vec![];
 
@@ -373,6 +386,7 @@ async fn do_lock(
     let requirements = target.lower(requirements, index_locations, sources)?;
     let overrides = target.lower(overrides, index_locations, sources)?;
     let constraints = target.lower(constraints, index_locations, sources)?;
+    let build_constraints = target.lower(build_constraints, index_locations, sources)?;
     let dependency_groups = dependency_groups
         .into_iter()
         .map(|(name, requirements)| {
@@ -418,6 +432,41 @@ async fn do_lock(
         }
 
         environments
+    };
+
+    // Collect the list of required platforms.
+    let required_environments = if let Some(required_environments) = target.required_environments()
+    {
+        // Ensure that the environments are disjoint.
+        for (lhs, rhs) in required_environments
+            .as_markers()
+            .iter()
+            .zip(required_environments.as_markers().iter().skip(1))
+        {
+            if !lhs.is_disjoint(*rhs) {
+                let mut hint = lhs.negate();
+                hint.and(*rhs);
+
+                let lhs = lhs
+                    .contents()
+                    .map(|contents| contents.to_string())
+                    .unwrap_or_else(|| "true".to_string());
+                let rhs = rhs
+                    .contents()
+                    .map(|contents| contents.to_string())
+                    .unwrap_or_else(|| "true".to_string());
+                let hint = hint
+                    .contents()
+                    .map(|contents| contents.to_string())
+                    .unwrap_or_else(|| "true".to_string());
+
+                return Err(ProjectError::OverlappingMarkers(lhs, rhs, hint));
+            }
+        }
+
+        Some(required_environments)
+    } else {
+        None
     };
 
     // Determine the supported Python range. If no range is defined, and warn and default to the
@@ -488,12 +537,12 @@ async fn do_lock(
 
     // Initialize the registry client.
     let client = RegistryClientBuilder::new(cache.clone())
-        .native_tls(native_tls)
-        .connectivity(connectivity)
+        .native_tls(network_settings.native_tls)
+        .connectivity(network_settings.connectivity)
         .index_urls(index_locations.index_urls())
         .index_strategy(index_strategy)
         .keyring(keyring_provider)
-        .allow_insecure_host(allow_insecure_host.to_vec())
+        .allow_insecure_host(network_settings.allow_insecure_host.clone())
         .markers(interpreter.markers())
         .platform(interpreter.platform())
         .build();
@@ -517,12 +566,14 @@ async fn do_lock(
         .exclude_newer(exclude_newer)
         .index_strategy(index_strategy)
         .build_options(build_options.clone())
+        .required_environments(required_environments.cloned().unwrap_or_default())
         .build();
     let hasher = HashStrategy::Generate(HashGeneration::Url);
 
+    let build_constraints = Constraints::from_requirements(build_constraints.iter().cloned());
+
     // TODO(charlie): These are all default values. We should consider whether we want to make them
     // optional on the downstream APIs.
-    let build_constraints = Constraints::default();
     let build_hasher = HashStrategy::default();
     let extras = ExtrasSpecification::default();
     let groups = DevGroupsSpecification::default();
@@ -573,6 +624,7 @@ async fn do_lock(
             &overrides,
             &conflicts,
             environments,
+            required_environments,
             dependency_metadata,
             interpreter,
             &requires_python,
@@ -741,6 +793,12 @@ async fn do_lock(
                         .cloned()
                         .map(SupportedEnvironments::into_markers)
                         .unwrap_or_default(),
+                )
+                .with_required_environments(
+                    required_environments
+                        .cloned()
+                        .map(SupportedEnvironments::into_markers)
+                        .unwrap_or_default(),
                 );
 
             Ok(LockResult::Changed(previous, lock))
@@ -775,6 +833,7 @@ impl ValidatedLock {
         overrides: &[Requirement],
         conflicts: &Conflicts,
         environments: Option<&SupportedEnvironments>,
+        required_environments: Option<&SupportedEnvironments>,
         dependency_metadata: &DependencyMetadata,
         interpreter: &Interpreter,
         requires_python: &RequiresPython,
@@ -877,6 +936,23 @@ impl ValidatedLock {
         // If the set of supported environments has changed, we have to perform a clean resolution.
         let expected = lock.simplified_supported_environments();
         let actual = environments
+            .map(SupportedEnvironments::as_markers)
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .map(|marker| lock.simplify_environment(marker))
+            .collect::<Vec<_>>();
+        if expected != actual {
+            debug!(
+                "Ignoring existing lockfile due to change in supported environments: `{:?}` vs. `{:?}`",
+                expected, actual
+            );
+            return Ok(Self::Versions(lock));
+        }
+
+        // If the set of required platforms has changed, we have to perform a clean resolution.
+        let expected = lock.simplified_required_environments();
+        let actual = required_environments
             .map(SupportedEnvironments::as_markers)
             .unwrap_or_default()
             .iter()
@@ -1054,6 +1130,20 @@ impl ValidatedLock {
                 } else {
                     debug!(
                         "Ignoring existing lockfile due to mismatched dependency groups for: `{name}`\n  Requested: {:?}\n  Existing: {:?}",
+                        expected, actual
+                    );
+                }
+                Ok(Self::Preferable(lock))
+            }
+            SatisfiesResult::MismatchedPackageProvidesExtra(name, version, expected, actual) => {
+                if let Some(version) = version {
+                    debug!(
+                        "Ignoring existing lockfile due to mismatched extras for: `{name}=={version}`\n  Requested: {:?}\n  Existing: {:?}",
+                        expected, actual
+                    );
+                } else {
+                    debug!(
+                        "Ignoring existing lockfile due to mismatched extras for: `{name}`\n  Requested: {:?}\n  Existing: {:?}",
                         expected, actual
                     );
                 }

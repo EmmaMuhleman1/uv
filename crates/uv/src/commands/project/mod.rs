@@ -10,10 +10,10 @@ use tracing::{debug, warn};
 
 use uv_cache::{Cache, CacheBucket};
 use uv_cache_key::cache_digest;
-use uv_client::{BaseClientBuilder, Connectivity, FlatIndexClient, RegistryClientBuilder};
+use uv_client::{BaseClientBuilder, FlatIndexClient, RegistryClientBuilder};
 use uv_configuration::{
     Concurrency, Constraints, DevGroupsManifest, DevGroupsSpecification, DryRun,
-    ExtrasSpecification, PreviewMode, Reinstall, SourceStrategy, TrustedHost, Upgrade,
+    ExtrasSpecification, PreviewMode, Reinstall, SourceStrategy, Upgrade,
 };
 use uv_dispatch::{BuildDispatch, SharedState};
 use uv_distribution::{DistributionDatabase, LoweredRequirement};
@@ -45,14 +45,16 @@ use uv_types::{BuildIsolation, EmptyInstalledPackages, HashStrategy};
 use uv_warnings::{warn_user, warn_user_once};
 use uv_workspace::dependency_groups::DependencyGroupError;
 use uv_workspace::pyproject::PyProjectToml;
-use uv_workspace::{ProjectWorkspace, Workspace};
+use uv_workspace::Workspace;
 
 use crate::commands::pip::loggers::{InstallLogger, ResolveLogger};
 use crate::commands::pip::operations::{Changelog, Modifications};
 use crate::commands::reporters::{PythonDownloadReporter, ResolverReporter};
 use crate::commands::{capitalize, conjunction, pip};
 use crate::printer::Printer;
-use crate::settings::{InstallerSettingsRef, ResolverInstallerSettings, ResolverSettingsRef};
+use crate::settings::{
+    InstallerSettingsRef, NetworkSettings, ResolverInstallerSettings, ResolverSettingsRef,
+};
 
 pub(crate) mod add;
 pub(crate) mod environment;
@@ -630,11 +632,9 @@ impl ScriptInterpreter {
     pub(crate) async fn discover(
         script: Pep723ItemRef<'_>,
         python_request: Option<PythonRequest>,
+        network_settings: &NetworkSettings,
         python_preference: PythonPreference,
         python_downloads: PythonDownloads,
-        connectivity: Connectivity,
-        native_tls: bool,
-        allow_insecure_host: &[TrustedHost],
         install_mirrors: &PythonInstallMirrors,
         no_config: bool,
         active: Option<bool>,
@@ -654,7 +654,7 @@ impl ScriptInterpreter {
 
         match PythonEnvironment::from_root(&root, cache) {
             Ok(venv) => {
-                if python_request.as_ref().map_or(true, |request| {
+                if python_request.as_ref().is_none_or(|request| {
                     if request.satisfied(venv.interpreter(), cache) {
                         debug!(
                             "The script environment's Python version satisfies `{}`",
@@ -686,9 +686,9 @@ impl ScriptInterpreter {
         };
 
         let client_builder = BaseClientBuilder::new()
-            .connectivity(connectivity)
-            .native_tls(native_tls)
-            .allow_insecure_host(allow_insecure_host.to_vec());
+            .connectivity(network_settings.connectivity)
+            .native_tls(network_settings.native_tls)
+            .allow_insecure_host(network_settings.allow_insecure_host.clone());
 
         let reporter = PythonDownloadReporter::single(printer);
 
@@ -773,11 +773,9 @@ impl ProjectInterpreter {
         workspace: &Workspace,
         project_dir: &Path,
         python_request: Option<PythonRequest>,
+        network_settings: &NetworkSettings,
         python_preference: PythonPreference,
         python_downloads: PythonDownloads,
-        connectivity: Connectivity,
-        native_tls: bool,
-        allow_insecure_host: &[TrustedHost],
         install_mirrors: &PythonInstallMirrors,
         no_config: bool,
         active: Option<bool>,
@@ -796,7 +794,7 @@ impl ProjectInterpreter {
         let venv = workspace.venv(active);
         match PythonEnvironment::from_root(&venv, cache) {
             Ok(venv) => {
-                if python_request.as_ref().map_or(true, |request| {
+                if python_request.as_ref().is_none_or(|request| {
                     if request.satisfied(venv.interpreter(), cache) {
                         debug!(
                             "The virtual environment's Python version satisfies `{}`",
@@ -861,9 +859,9 @@ impl ProjectInterpreter {
         };
 
         let client_builder = BaseClientBuilder::default()
-            .connectivity(connectivity)
-            .native_tls(native_tls)
-            .allow_insecure_host(allow_insecure_host.to_vec());
+            .connectivity(network_settings.connectivity)
+            .native_tls(network_settings.native_tls)
+            .allow_insecure_host(network_settings.allow_insecure_host.clone());
 
         let reporter = PythonDownloadReporter::single(printer);
 
@@ -1137,11 +1135,9 @@ impl ProjectEnvironment {
         workspace: &Workspace,
         python: Option<PythonRequest>,
         install_mirrors: &PythonInstallMirrors,
+        network_settings: &NetworkSettings,
         python_preference: PythonPreference,
         python_downloads: PythonDownloads,
-        connectivity: Connectivity,
-        native_tls: bool,
-        allow_insecure_host: &[TrustedHost],
         no_config: bool,
         active: Option<bool>,
         cache: &Cache,
@@ -1155,11 +1151,9 @@ impl ProjectEnvironment {
             workspace,
             workspace.install_path().as_ref(),
             python,
+            network_settings,
             python_preference,
             python_downloads,
-            connectivity,
-            native_tls,
-            allow_insecure_host,
             install_mirrors,
             no_config,
             active,
@@ -1342,11 +1336,9 @@ impl ScriptEnvironment {
     pub(crate) async fn get_or_init(
         script: Pep723ItemRef<'_>,
         python_request: Option<PythonRequest>,
+        network_settings: &NetworkSettings,
         python_preference: PythonPreference,
         python_downloads: PythonDownloads,
-        connectivity: Connectivity,
-        native_tls: bool,
-        allow_insecure_host: &[TrustedHost],
         install_mirrors: &PythonInstallMirrors,
         no_config: bool,
         active: Option<bool>,
@@ -1360,11 +1352,9 @@ impl ScriptEnvironment {
         match ScriptInterpreter::discover(
             script,
             python_request,
+            network_settings,
             python_preference,
             python_downloads,
-            connectivity,
-            native_tls,
-            allow_insecure_host,
             install_mirrors,
             no_config,
             active,
@@ -1482,11 +1472,9 @@ pub(crate) async fn resolve_names(
     requirements: Vec<UnresolvedRequirementSpecification>,
     interpreter: &Interpreter,
     settings: &ResolverInstallerSettings,
+    network_settings: &NetworkSettings,
     state: &SharedState,
-    connectivity: Connectivity,
     concurrency: Concurrency,
-    native_tls: bool,
-    allow_insecure_host: &[TrustedHost],
     cache: &Cache,
     printer: Printer,
     preview: PreviewMode,
@@ -1541,12 +1529,12 @@ pub(crate) async fn resolve_names(
 
     // Initialize the registry client.
     let client = RegistryClientBuilder::new(cache.clone())
-        .native_tls(native_tls)
-        .connectivity(connectivity)
+        .native_tls(network_settings.native_tls)
+        .connectivity(network_settings.connectivity)
         .index_urls(index_locations.index_urls())
         .index_strategy(*index_strategy)
         .keyring(*keyring_provider)
-        .allow_insecure_host(allow_insecure_host.to_vec())
+        .allow_insecure_host(network_settings.allow_insecure_host.clone())
         .markers(interpreter.markers())
         .platform(interpreter.platform())
         .build();
@@ -1636,12 +1624,10 @@ pub(crate) async fn resolve_environment(
     spec: EnvironmentSpecification<'_>,
     interpreter: &Interpreter,
     settings: ResolverSettingsRef<'_>,
+    network_settings: &NetworkSettings,
     state: &PlatformState,
     logger: Box<dyn ResolveLogger>,
-    connectivity: Connectivity,
     concurrency: Concurrency,
-    native_tls: bool,
-    allow_insecure_host: &[TrustedHost],
     cache: &Cache,
     printer: Printer,
     preview: PreviewMode,
@@ -1694,12 +1680,12 @@ pub(crate) async fn resolve_environment(
 
     // Initialize the registry client.
     let client = RegistryClientBuilder::new(cache.clone())
-        .native_tls(native_tls)
-        .connectivity(connectivity)
+        .native_tls(network_settings.native_tls)
+        .connectivity(network_settings.connectivity)
         .index_urls(index_locations.index_urls())
         .index_strategy(index_strategy)
         .keyring(keyring_provider)
-        .allow_insecure_host(allow_insecure_host.to_vec())
+        .allow_insecure_host(network_settings.allow_insecure_host.clone())
         .markers(interpreter.markers())
         .platform(interpreter.platform())
         .build();
@@ -1819,13 +1805,11 @@ pub(crate) async fn sync_environment(
     resolution: &Resolution,
     modifications: Modifications,
     settings: InstallerSettingsRef<'_>,
+    network_settings: &NetworkSettings,
     state: &PlatformState,
     logger: Box<dyn InstallLogger>,
     installer_metadata: bool,
-    connectivity: Connectivity,
     concurrency: Concurrency,
-    native_tls: bool,
-    allow_insecure_host: &[TrustedHost],
     cache: &Cache,
     printer: Printer,
     preview: PreviewMode,
@@ -1865,12 +1849,12 @@ pub(crate) async fn sync_environment(
 
     // Initialize the registry client.
     let client = RegistryClientBuilder::new(cache.clone())
-        .native_tls(native_tls)
-        .connectivity(connectivity)
+        .native_tls(network_settings.native_tls)
+        .connectivity(network_settings.connectivity)
         .index_urls(index_locations.index_urls())
         .index_strategy(index_strategy)
         .keyring(keyring_provider)
-        .allow_insecure_host(allow_insecure_host.to_vec())
+        .allow_insecure_host(network_settings.allow_insecure_host.clone())
         .markers(interpreter.markers())
         .platform(interpreter.platform())
         .build();
@@ -1976,14 +1960,12 @@ pub(crate) async fn update_environment(
     spec: RequirementsSpecification,
     modifications: Modifications,
     settings: &ResolverInstallerSettings,
+    network_settings: &NetworkSettings,
     state: &SharedState,
     resolve: Box<dyn ResolveLogger>,
     install: Box<dyn InstallLogger>,
     installer_metadata: bool,
-    connectivity: Connectivity,
     concurrency: Concurrency,
-    native_tls: bool,
-    allow_insecure_host: &[TrustedHost],
     cache: &Cache,
     dry_run: DryRun,
     printer: Printer,
@@ -2069,12 +2051,12 @@ pub(crate) async fn update_environment(
 
     // Initialize the registry client.
     let client = RegistryClientBuilder::new(cache.clone())
-        .native_tls(native_tls)
-        .connectivity(connectivity)
+        .native_tls(network_settings.native_tls)
+        .connectivity(network_settings.connectivity)
         .index_urls(index_locations.index_urls())
         .index_strategy(*index_strategy)
         .keyring(*keyring_provider)
-        .allow_insecure_host(allow_insecure_host.to_vec())
+        .allow_insecure_host(network_settings.allow_insecure_host.clone())
         .markers(interpreter.markers())
         .platform(interpreter.platform())
         .build();
@@ -2259,49 +2241,6 @@ pub(crate) async fn init_script_python_requirement(
     Ok(RequiresPython::greater_than_equal_version(
         &interpreter.python_minor_version(),
     ))
-}
-
-#[derive(Debug, Copy, Clone)]
-pub(crate) enum DependencyGroupsTarget<'env> {
-    /// The dependency groups can be defined in any workspace member.
-    Workspace(&'env Workspace),
-    /// The dependency groups must be defined in the target project.
-    Project(&'env ProjectWorkspace),
-    /// The dependency groups must be defined in the target script.
-    Script,
-}
-
-impl DependencyGroupsTarget<'_> {
-    /// Validate the dependency groups requested by the [`DevGroupsSpecification`].
-    #[allow(clippy::result_large_err)]
-    pub(crate) fn validate(self, dev: &DevGroupsSpecification) -> Result<(), ProjectError> {
-        for group in dev.explicit_names() {
-            match self {
-                Self::Workspace(workspace) => {
-                    // The group must be defined in the workspace.
-                    if !workspace.groups().contains(group) {
-                        return Err(ProjectError::MissingGroupWorkspace(group.clone()));
-                    }
-                }
-                Self::Project(project) => {
-                    // The group must be defined in the target project.
-                    if !project
-                        .current_project()
-                        .pyproject_toml()
-                        .dependency_groups
-                        .as_ref()
-                        .is_some_and(|groups| groups.contains_key(group))
-                    {
-                        return Err(ProjectError::MissingGroupProject(group.clone()));
-                    }
-                }
-                Self::Script => {
-                    return Err(ProjectError::MissingGroupScript(group.clone()));
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Returns the default dependency groups from the [`PyProjectToml`].

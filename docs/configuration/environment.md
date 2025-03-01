@@ -173,6 +173,12 @@ a link mode.
 Equivalent to the `--locked` command-line argument. If set, uv will assert that the
 `uv.lock` remains unchanged.
 
+### `UV_LOG_CONTEXT`
+
+Add additional context and structure to log messages.
+
+If logging is not enabled, e.g., with `RUST_LOG` or `-v`, this has no effect.
+
 ### `UV_NATIVE_TLS`
 
 Equivalent to the `--native-tls` command-line argument. If set to `true`, uv will
@@ -398,6 +404,12 @@ Used to detect Bash shell usage.
 ### `CLICOLOR_FORCE`
 
 Use to control color via `anstyle`.
+
+### `COLUMNS`
+
+Overrides terminal width used for wrapping. This variable is not read by uv directly.
+
+This is a quasi-standard variable, described e.g. in `ncurses(3x)`.
 
 ### `CONDA_DEFAULT_ENV`
 

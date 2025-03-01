@@ -617,6 +617,7 @@ fn sync_legacy_non_project_group() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
+    Resolved 6 packages in [TIME]
     error: Group `bop` is not defined in any project's `dependency-groups` table
     "###);
 
@@ -1073,8 +1074,9 @@ fn sync_relative_wheel() -> Result<()> {
         },
         {
             assert_snapshot!(
-                lock, @r#"
+                lock, @r###"
             version = 1
+            revision = 1
             requires-python = ">=3.12"
 
             [options]
@@ -1088,10 +1090,6 @@ fn sync_relative_wheel() -> Result<()> {
                 { filename = "ok-1.0.0-py3-none-any.whl", hash = "sha256:79f0b33e6ce1e09eaa1784c8eee275dfe84d215d9c65c652f07c18e85fdaac5f" },
             ]
 
-            [package.metadata]
-            provides-extras = []
-            requires-dist = []
-
             [[package]]
             name = "relative-wheel"
             version = "0.1.0"
@@ -1101,9 +1099,8 @@ fn sync_relative_wheel() -> Result<()> {
             ]
 
             [package.metadata]
-            provides-extras = []
             requires-dist = [{ name = "ok", path = "wheels/ok-1.0.0-py3-none-any.whl" }]
-            "#
+            "###
             );
         }
     );
@@ -1759,6 +1756,7 @@ fn sync_non_existent_group() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
+    Resolved 7 packages in [TIME]
     error: Group `baz` is not defined in the project's `dependency-groups` table
     "###);
 
@@ -1768,6 +1766,7 @@ fn sync_non_existent_group() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
+    Resolved 7 packages in [TIME]
     error: Group `baz` is not defined in the project's `dependency-groups` table
     "###);
 
@@ -1782,6 +1781,55 @@ fn sync_non_existent_group() -> Result<()> {
     Prepared 1 package in [TIME]
     Installed 1 package in [TIME]
      + typing-extensions==4.10.0
+    "###);
+
+    // Requesting with `--frozen` should respect the groups in the lockfile, rather than the
+    // `pyproject.toml`.
+    uv_snapshot!(context.filters(), context.sync().arg("--frozen").arg("--group").arg("bar"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Prepared 5 packages in [TIME]
+    Installed 5 packages in [TIME]
+     + certifi==2024.2.2
+     + charset-normalizer==3.3.2
+     + idna==3.6
+     + requests==2.31.0
+     + urllib3==2.2.1
+    "###);
+
+    // Replace `bar` with `baz`.
+    pyproject_toml.write_str(
+        r#"
+        [project]
+        name = "project"
+        version = "0.1.0"
+        requires-python = ">=3.12"
+        dependencies = ["typing-extensions"]
+
+        [dependency-groups]
+        baz = ["iniconfig"]
+        "#,
+    )?;
+
+    uv_snapshot!(context.filters(), context.sync().arg("--frozen").arg("--group").arg("bar"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Audited 6 packages in [TIME]
+    "###);
+
+    uv_snapshot!(context.filters(), context.sync().arg("--frozen").arg("--group").arg("baz"), @r###"
+    success: false
+    exit_code: 2
+    ----- stdout -----
+
+    ----- stderr -----
+    error: Group `baz` is not defined in the project's `dependency-groups` table
     "###);
 
     Ok(())
@@ -2411,8 +2459,9 @@ fn sync_group_legacy_non_project_member() -> Result<()> {
         filters => context.filters(),
     }, {
         assert_snapshot!(
-            lock, @r#"
+            lock, @r###"
         version = 1
+        revision = 1
         requires-python = ">=3.12"
 
         [options]
@@ -2438,7 +2487,6 @@ fn sync_group_legacy_non_project_member() -> Result<()> {
         ]
 
         [package.metadata]
-        provides-extras = []
         requires-dist = [{ name = "iniconfig", specifier = ">=1" }]
 
         [[package]]
@@ -2458,7 +2506,7 @@ fn sync_group_legacy_non_project_member() -> Result<()> {
         wheels = [
             { url = "https://files.pythonhosted.org/packages/f9/de/dc04a3ea60b22624b51c703a84bbe0184abcd1d0b9bc8074b5d6b7ab90bb/typing_extensions-4.10.0-py3-none-any.whl", hash = "sha256:69b1a937c3a517342112fb4c6df7e72fc39a38e7891a5730ed4985b5214b5475", size = 33926 },
         ]
-        "#
+        "###
         );
     });
 
@@ -2522,8 +2570,9 @@ fn sync_group_self() -> Result<()> {
         filters => context.filters(),
     }, {
         assert_snapshot!(
-            lock, @r#"
+            lock, @r###"
         version = 1
+        revision = 1
         requires-python = ">=3.12"
 
         [options]
@@ -2570,11 +2619,11 @@ fn sync_group_self() -> Result<()> {
         ]
 
         [package.metadata]
-        provides-extras = ["test"]
         requires-dist = [
             { name = "idna", marker = "extra == 'test'", specifier = ">=3" },
             { name = "iniconfig", specifier = ">=2" },
         ]
+        provides-extras = ["test"]
 
         [package.metadata.requires-dev]
         bar = [{ name = "project", extras = ["test"] }]
@@ -2591,7 +2640,7 @@ fn sync_group_self() -> Result<()> {
         wheels = [
             { url = "https://files.pythonhosted.org/packages/f9/de/dc04a3ea60b22624b51c703a84bbe0184abcd1d0b9bc8074b5d6b7ab90bb/typing_extensions-4.10.0-py3-none-any.whl", hash = "sha256:69b1a937c3a517342112fb4c6df7e72fc39a38e7891a5730ed4985b5214b5475", size = 33926 },
         ]
-        "#
+        "###
         );
     });
 
@@ -3308,8 +3357,9 @@ fn convert_to_virtual() -> Result<()> {
         filters => context.filters(),
     }, {
         assert_snapshot!(
-            lock, @r#"
+            lock, @r###"
         version = 1
+        revision = 1
         requires-python = ">=3.12"
 
         [options]
@@ -3333,9 +3383,8 @@ fn convert_to_virtual() -> Result<()> {
         ]
 
         [package.metadata]
-        provides-extras = []
         requires-dist = [{ name = "iniconfig" }]
-        "#
+        "###
         );
     });
 
@@ -3368,8 +3417,9 @@ fn convert_to_virtual() -> Result<()> {
         filters => context.filters(),
     }, {
         assert_snapshot!(
-            lock, @r#"
+            lock, @r###"
         version = 1
+        revision = 1
         requires-python = ">=3.12"
 
         [options]
@@ -3393,9 +3443,8 @@ fn convert_to_virtual() -> Result<()> {
         ]
 
         [package.metadata]
-        provides-extras = []
         requires-dist = [{ name = "iniconfig" }]
-        "#
+        "###
         );
     });
 
@@ -3437,8 +3486,9 @@ fn convert_to_package() -> Result<()> {
         filters => context.filters(),
     }, {
         assert_snapshot!(
-            lock, @r#"
+            lock, @r###"
         version = 1
+        revision = 1
         requires-python = ">=3.12"
 
         [options]
@@ -3462,9 +3512,8 @@ fn convert_to_package() -> Result<()> {
         ]
 
         [package.metadata]
-        provides-extras = []
         requires-dist = [{ name = "iniconfig" }]
-        "#
+        "###
         );
     });
 
@@ -3502,8 +3551,9 @@ fn convert_to_package() -> Result<()> {
         filters => context.filters(),
     }, {
         assert_snapshot!(
-            lock, @r#"
+            lock, @r###"
         version = 1
+        revision = 1
         requires-python = ">=3.12"
 
         [options]
@@ -3527,9 +3577,8 @@ fn convert_to_package() -> Result<()> {
         ]
 
         [package.metadata]
-        provides-extras = []
         requires-dist = [{ name = "iniconfig" }]
-        "#
+        "###
         );
     });
 
@@ -4920,8 +4969,9 @@ fn sync_dynamic_extra() -> Result<()> {
         },
         {
             assert_snapshot!(
-                lock, @r#"
+                lock, @r###"
             version = 1
+            revision = 1
             requires-python = ">=3.12"
 
             [options]
@@ -4950,11 +5000,11 @@ fn sync_dynamic_extra() -> Result<()> {
             ]
 
             [package.metadata]
-            provides-extras = ["dev"]
             requires-dist = [
                 { name = "iniconfig" },
                 { name = "typing-extensions", marker = "extra == 'dev'" },
             ]
+            provides-extras = ["dev"]
 
             [[package]]
             name = "typing-extensions"
@@ -4964,7 +5014,7 @@ fn sync_dynamic_extra() -> Result<()> {
             wheels = [
                 { url = "https://files.pythonhosted.org/packages/f9/de/dc04a3ea60b22624b51c703a84bbe0184abcd1d0b9bc8074b5d6b7ab90bb/typing_extensions-4.10.0-py3-none-any.whl", hash = "sha256:69b1a937c3a517342112fb4c6df7e72fc39a38e7891a5730ed4985b5214b5475", size = 33926 },
             ]
-            "#
+            "###
             );
         }
     );
@@ -5862,6 +5912,7 @@ fn sync_all_groups() -> Result<()> {
         [dependency-groups]
         types = ["sniffio>=1"]
         async = ["anyio>=3"]
+        empty = []
 
         [tool.uv.workspace]
         members = ["child"]
@@ -5944,7 +5995,20 @@ fn sync_all_groups() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
+    Resolved 8 packages in [TIME]
     error: Group `foo` is not defined in any project's `dependency-groups` table
+    "###);
+
+    // Sync an empty group.
+    uv_snapshot!(context.filters(), context.sync().arg("--group").arg("empty"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 8 packages in [TIME]
+    Uninstalled 1 package in [TIME]
+     - packaging==24.0
     "###);
 
     Ok(())
@@ -6249,8 +6313,9 @@ fn sync_stale_egg_info() -> Result<()> {
         },
         {
             assert_snapshot!(
-                lock, @r#"
+                lock, @r###"
             version = 1
+            revision = 1
             requires-python = ">=3.13"
 
             [options]
@@ -6266,7 +6331,6 @@ fn sync_stale_egg_info() -> Result<()> {
             ]
 
             [package.metadata]
-            provides-extras = []
             requires-dist = [
                 { name = "member", git = "https://github.com/astral-sh/uv-stale-egg-info-test.git?subdirectory=member" },
                 { name = "root", git = "https://github.com/astral-sh/uv-stale-egg-info-test.git" },
@@ -6296,7 +6360,7 @@ fn sync_stale_egg_info() -> Result<()> {
             wheels = [
                 { url = "https://files.pythonhosted.org/packages/92/e1/1c8bb3420105e70bdf357d57dd5567202b4ef8d27f810e98bb962d950834/setuptools-69.2.0-py3-none-any.whl", hash = "sha256:c21c49fb1042386df081cb5d86759792ab89efca84cf114889191cd09aacc80c", size = 821485 },
             ]
-            "#
+            "###
             );
         }
     );
@@ -6356,8 +6420,9 @@ fn sync_git_repeated_member_static_metadata() -> Result<()> {
         },
         {
             assert_snapshot!(
-                lock, @r#"
+                lock, @r###"
             version = 1
+            revision = 1
             requires-python = ">=3.13"
 
             [options]
@@ -6373,7 +6438,6 @@ fn sync_git_repeated_member_static_metadata() -> Result<()> {
             ]
 
             [package.metadata]
-            provides-extras = []
             requires-dist = [
                 { name = "uv-git-workspace-in-root", git = "https://github.com/astral-sh/workspace-in-root-test.git" },
                 { name = "workspace-member-in-subdir", git = "https://github.com/astral-sh/workspace-in-root-test.git?subdirectory=workspace-member-in-subdir" },
@@ -6391,7 +6455,7 @@ fn sync_git_repeated_member_static_metadata() -> Result<()> {
             dependencies = [
                 { name = "uv-git-workspace-in-root" },
             ]
-            "#
+            "###
             );
         }
     );
@@ -6450,8 +6514,9 @@ fn sync_git_repeated_member_dynamic_metadata() -> Result<()> {
         },
         {
             assert_snapshot!(
-                lock, @r#"
+                lock, @r###"
             version = 1
+            revision = 1
             requires-python = ">=3.13"
 
             [options]
@@ -6475,7 +6540,6 @@ fn sync_git_repeated_member_dynamic_metadata() -> Result<()> {
             ]
 
             [package.metadata]
-            provides-extras = []
             requires-dist = [
                 { name = "dependency", git = "https://github.com/astral-sh/uv-dynamic-metadata-test.git?subdirectory=dependency" },
                 { name = "package", git = "https://github.com/astral-sh/uv-dynamic-metadata-test.git" },
@@ -6507,7 +6571,7 @@ fn sync_git_repeated_member_dynamic_metadata() -> Result<()> {
             wheels = [
                 { url = "https://files.pythonhosted.org/packages/f9/de/dc04a3ea60b22624b51c703a84bbe0184abcd1d0b9bc8074b5d6b7ab90bb/typing_extensions-4.10.0-py3-none-any.whl", hash = "sha256:69b1a937c3a517342112fb4c6df7e72fc39a38e7891a5730ed4985b5214b5475", size = 33926 },
             ]
-            "#
+            "###
             );
         }
     );
@@ -6568,8 +6632,9 @@ fn sync_git_repeated_member_backwards_path() -> Result<()> {
         },
         {
             assert_snapshot!(
-                lock, @r#"
+                lock, @r###"
             version = 1
+            revision = 1
             requires-python = ">=3.13"
 
             [options]
@@ -6590,7 +6655,6 @@ fn sync_git_repeated_member_backwards_path() -> Result<()> {
             ]
 
             [package.metadata]
-            provides-extras = []
             requires-dist = [
                 { name = "dependency", git = "https://github.com/astral-sh/uv-backwards-path-test?subdirectory=dependency" },
                 { name = "package", git = "https://github.com/astral-sh/uv-backwards-path-test?subdirectory=root" },
@@ -6603,7 +6667,7 @@ fn sync_git_repeated_member_backwards_path() -> Result<()> {
             dependencies = [
                 { name = "dependency" },
             ]
-            "#
+            "###
             );
         }
     );
@@ -6750,8 +6814,9 @@ fn sync_git_path_dependency() -> Result<()> {
         },
         {
             assert_snapshot!(
-                lock, @r#"
+                lock, @r###"
             version = 1
+            revision = 1
             requires-python = ">=3.13"
 
             [options]
@@ -6766,7 +6831,6 @@ fn sync_git_path_dependency() -> Result<()> {
             ]
 
             [package.metadata]
-            provides-extras = []
             requires-dist = [{ name = "package2", git = "https://github.com/astral-sh/uv-path-dependency-test.git?subdirectory=package2" }]
 
             [[package]]
@@ -6781,7 +6845,7 @@ fn sync_git_path_dependency() -> Result<()> {
             dependencies = [
                 { name = "package1" },
             ]
-            "#
+            "###
             );
         }
     );
@@ -6858,8 +6922,9 @@ fn sync_build_tag() -> Result<()> {
         filters => context.filters(),
     }, {
         assert_snapshot!(
-            lock, @r#"
+            lock, @r###"
         version = 1
+        revision = 1
         requires-python = ">=3.12"
 
         [options]
@@ -6884,9 +6949,8 @@ fn sync_build_tag() -> Result<()> {
         ]
 
         [package.metadata]
-        provides-extras = []
         requires-dist = [{ name = "build-tag" }]
-        "#
+        "###
         );
     });
 
@@ -7411,6 +7475,7 @@ fn sync_locked_script() -> Result<()> {
         assert_snapshot!(
             lock, @r###"
         version = 1
+        revision = 1
         requires-python = ">=3.11"
 
         [options]
@@ -7515,6 +7580,7 @@ fn sync_locked_script() -> Result<()> {
         assert_snapshot!(
             lock, @r###"
         version = 1
+        revision = 1
         requires-python = ">=3.11"
 
         [options]
@@ -7612,6 +7678,184 @@ fn sync_locked_script() -> Result<()> {
      + sniffio==1.3.1
      + typing-extensions==4.10.0
     ");
+
+    Ok(())
+}
+
+#[test]
+fn unsupported_git_scheme() -> Result<()> {
+    let context = TestContext::new_with_versions(&["3.12"]);
+
+    let pyproject_toml = context.temp_dir.child("pyproject.toml");
+    pyproject_toml.write_str(indoc! {r#"
+        [project]
+        name = "foo"
+        version = "0.1.0"
+        requires-python = ">=3.12"
+        dependencies = ["foo"]
+
+        [tool.uv.sources]
+        # `c:/...` looks like an absolute path, but this field requires a URL such as `file:///...`.
+        foo = { git = "c:/home/ferris/projects/foo", rev = "7701ffcbae245819b828dc5f885a5201158897ef" }
+        "#},
+    )?;
+
+    uv_snapshot!(context.filters(), context.sync(), @r###"
+    success: false
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    Using CPython 3.12.[X] interpreter at: [PYTHON-3.12]
+    Creating virtual environment at: .venv
+      × Failed to build `foo @ file://[TEMP_DIR]/`
+      ├─▶ Failed to parse entry: `foo`
+      ╰─▶ Unsupported Git URL scheme `c:` in `c:/home/ferris/projects/foo` (expected one of `https:`, `ssh:`, or `file:`)
+    "###);
+    Ok(())
+}
+
+/// See: <https://github.com/astral-sh/uv/issues/11648>
+#[test]
+fn multiple_group_conflicts() -> Result<()> {
+    let context = TestContext::new("3.12");
+
+    let pyproject_toml = context.temp_dir.child("pyproject.toml");
+    pyproject_toml.write_str(
+        r#"
+        [project]
+        name = "project"
+        version = "0.1.0"
+        requires-python = ">=3.12"
+        dependencies = []
+
+        [dependency-groups]
+        foo = [
+            "iniconfig>=2",
+        ]
+        bar = [
+            "iniconfig<2",
+        ]
+        baz = [
+            "iniconfig",
+        ]
+
+        [tool.uv]
+        conflicts = [
+          [
+            { group = "foo" },
+            { group = "bar" },
+          ],
+        ]
+        "#,
+    )?;
+
+    uv_snapshot!(context.filters(), context.sync(), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 3 packages in [TIME]
+    Audited in [TIME]
+    "###);
+
+    uv_snapshot!(context.filters(), context.sync().arg("--group").arg("baz"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 3 packages in [TIME]
+    Prepared 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + iniconfig==2.0.0
+    "###);
+
+    uv_snapshot!(context.filters(), context.sync().arg("--group").arg("foo").arg("--group").arg("baz"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 3 packages in [TIME]
+    Audited 1 package in [TIME]
+    "###);
+
+    uv_snapshot!(context.filters(), context.sync().arg("--group").arg("bar").arg("--group").arg("baz"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 3 packages in [TIME]
+    Prepared 1 package in [TIME]
+    Uninstalled 1 package in [TIME]
+    Installed 1 package in [TIME]
+     - iniconfig==2.0.0
+     + iniconfig==1.1.1
+    "###);
+
+    uv_snapshot!(context.filters(), context.sync().arg("--group").arg("foo").arg("--group").arg("bar"), @r###"
+    success: false
+    exit_code: 2
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 3 packages in [TIME]
+    error: Groups `foo` and `bar` are incompatible with the declared conflicts: {`project:foo`, `project:bar`}
+    "###);
+
+    Ok(())
+}
+
+/// See: <https://github.com/astral-sh/uv/issues/11703>
+#[test]
+fn prune_cache_url_subdirectory() -> Result<()> {
+    let context = TestContext::new("3.12");
+
+    let pyproject_toml = context.temp_dir.child("pyproject.toml");
+    pyproject_toml.write_str(indoc! {r#"
+        [project]
+        name = "project"
+        version = "0.1.0"
+        requires-python = ">=3.12"
+        dependencies = [
+            "root",
+        ]
+
+        [tool.uv.sources]
+        root = { url = "https://github.com/user-attachments/files/18216295/subdirectory-test.tar.gz", subdirectory = "packages/root" }
+    "#})?;
+
+    // Lock the project.
+    uv_snapshot!(context.filters(), context.lock(), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 5 packages in [TIME]
+    "###);
+
+    // Prune the cache.
+    context.prune().arg("--ci").assert().success();
+
+    // Install the project.
+    uv_snapshot!(context.filters(), context.sync(), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 5 packages in [TIME]
+    Prepared 4 packages in [TIME]
+    Installed 4 packages in [TIME]
+     + anyio==4.3.0
+     + idna==3.6
+     + root==0.0.1 (from https://github.com/user-attachments/files/18216295/subdirectory-test.tar.gz#subdirectory=packages/root)
+     + sniffio==1.3.1
+    "###);
 
     Ok(())
 }
